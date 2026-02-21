@@ -32,6 +32,16 @@ const phases = [
     duration: "1~2일",
     steps: [
       {
+        title: "왜 이 단계가 필요한가 (비즈니스 관점)",
+        desc: "초기 속도와 팀 비용을 줄이는 최소 툴체인",
+        items: [
+          { name: "온보딩 시간 단축", note: "준님 1인 운영 기준, 환경 편차 최소화" },
+          { name: "실험 속도 확보", note: "아이디어 → API 테스트까지 1일 내 도달" },
+          { name: "리스크 절감", note: "표준 도구 채택으로 유지보수 비용 최소화" },
+        ],
+        code: null,
+      },
+      {
         title: "VS Code 확장 설치",
         desc: "개발 생산성을 높이는 필수 확장 프로그램",
         items: [
@@ -99,6 +109,16 @@ pip install fastapi uvicorn[standard] \\
     duration: "1일",
     steps: [
       {
+        title: "왜 이 단계가 필요한가 (비즈니스 관점)",
+        desc: "초기 기술 부채를 통제하고 비용 폭주를 예방",
+        items: [
+          { name: "구성요소 분리", note: "DB/스토리지/인증을 분리해 교체 비용 최소화" },
+          { name: "보안 책임 최소화", note: "인증을 외부에 위임할 수 있는 구조" },
+          { name: "확장 대비", note: "성장기 서버리스로 이동 가능한 설계" },
+        ],
+        code: null,
+      },
+      {
         title: "전체 아키텍처 다이어그램",
         desc: "Android 앱 ↔ FastAPI ↔ DB/Storage 구조",
         items: null,
@@ -112,7 +132,7 @@ pip install fastapi uvicorn[standard] \\
 │              Repository Layer                   │
 │         (Retrofit2 + OkHttp3)                   │
 └──────────────────┬──────────────────────────────┘
-                   │ HTTPS / JWT
+                   │ HTTPS / Firebase ID Token
 ┌──────────────────▼──────────────────────────────┐
 │           FastAPI Backend (Python)              │
 │  /auth  /analyze  /records  /summary            │
@@ -122,11 +142,10 @@ pip install fastapi uvicorn[standard] \\
 │         └──────────────────────┘                │
 └──────┬──────────────────────────────┬───────────┘
        │                              │
-┌──────▼──────┐              ┌────────▼────────┐
-│ PostgreSQL  │              │  AWS S3 / Local  │
-│  (records,  │              │  (encrypted      │
-│   users)    │              │   photo storage) │
-└─────────────┘              └─────────────────┘`,
+┌──────▼────────────┐        ┌────────▼────────┐
+│ Supabase Postgres │        │  Cloudflare R2  │
+│  (records, users) │        │  (photo storage)│
+└───────────────────┘        └─────────────────┘`,
       },
       {
         title: "디렉토리 구조 (백엔드)",
@@ -137,7 +156,7 @@ pip install fastapi uvicorn[standard] \\
 │   ├── main.py              # FastAPI 앱 진입점
 │   ├── core/
 │   │   ├── config.py        # 환경변수 설정
-│   │   ├── security.py      # JWT 인증
+│   │   ├── security.py      # Firebase 토큰 검증
 │   │   └── database.py      # DB 연결
 │   ├── api/
 │   │   ├── auth.py          # 회원가입/로그인
@@ -169,7 +188,7 @@ pip install fastapi uvicorn[standard] \\
 ├── data/
 │   ├── api/
 │   │   ├── ApiService.kt        # Retrofit 인터페이스
-│   │   └── AuthInterceptor.kt   # JWT 헤더 추가
+│   │   └── AuthInterceptor.kt   # Firebase 토큰 헤더 추가
 │   ├── repository/
 │   │   ├── AnalyzeRepo.kt
 │   │   └── RecordRepo.kt
@@ -205,6 +224,16 @@ pip install fastapi uvicorn[standard] \\
     dim: COLORS.greenDim,
     duration: "1~2주",
     steps: [
+      {
+        title: "왜 이 단계가 필요한가 (비즈니스 관점)",
+        desc: "핵심 가치(분석 결과) 전달을 위한 최소 백엔드",
+        items: [
+          { name: "검증 가능한 API", note: "앱과 분리된 서버 로직으로 신뢰성 확보" },
+          { name: "기능 확장 기반", note: "기록/요약/분석을 모듈화" },
+          { name: "하이브리드 전환 준비", note: "인증/스토리지 교체를 염두에 둔 구조" },
+        ],
+        code: null,
+      },
       {
         title: "1단계: FastAPI 앱 기본 세팅",
         desc: "main.py와 핵심 설정 파일 작성",
@@ -335,7 +364,7 @@ class Record(Base):
     dehydration = Column(Boolean, default=False)
     note = Column(String, default="")
     risk = Column(String, nullable=False)       # GREEN/YELLOW/RED
-    image_path = Column(String, nullable=True)  # S3 경로
+    image_path = Column(String, nullable=True)  # R2 경로
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 # Alembic 마이그레이션 실행
@@ -383,6 +412,46 @@ volumes:
 # API 확인
 # http://localhost:8000/docs  ← Swagger UI 자동 생성!`,
       },
+      {
+        title: "Phase 3 보강: Firebase Auth 토큰 검증",
+        desc: "JWT 대신 Firebase ID 토큰 검증으로 전환 (하이브리드 연동)",
+        items: null,
+        code: `# requirements.txt (추가)
+firebase-admin==6.5.0
+
+# app/core/firebase.py
+import firebase_admin
+from firebase_admin import credentials
+from app.core.config import settings
+
+def init_firebase() -> None:
+    # Phase 3 기존 보안 모듈과 연결되는 공통 초기화
+    if not firebase_admin._apps:
+        cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_PATH)
+        firebase_admin.initialize_app(cred)
+
+# app/core/security.py (JWT 대신 Firebase)
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from firebase_admin import auth
+from app.core.firebase import init_firebase
+
+bearer = HTTPBearer()
+
+def get_current_user(
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+):
+    # Phase 3 기존 Depends(get_current_user) 호출부와 연결
+    init_firebase()
+    try:
+        decoded = auth.verify_id_token(creds.credentials)
+        return {"uid": decoded["uid"], "email": decoded.get("email")}
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Firebase token")
+
+# app/api/analyze.py (기존 코드와 동일한 방식으로 사용)
+# current_user = Depends(get_current_user)  # 그대로 유지`,
+      },
     ],
   },
   {
@@ -394,6 +463,16 @@ volumes:
     dim: COLORS.orangeDim,
     duration: "2~3주",
     steps: [
+      {
+        title: "왜 이 단계가 필요한가 (비즈니스 관점)",
+        desc: "초기 사용자의 경험 품질이 유지율을 결정",
+        items: [
+          { name: "가입 장벽 제거", note: "Google 로그인으로 이탈률 최소화" },
+          { name: "데이터 비용 절감", note: "이미지 업로드 최적화로 운영비 제어" },
+          { name: "확장 준비", note: "토큰 기반으로 모든 API 호출을 표준화" },
+        ],
+        code: null,
+      },
       {
         title: "1단계: build.gradle 의존성",
         desc: "필수 라이브러리 추가",
@@ -434,13 +513,63 @@ dependencies {
     implementation("com.google.dagger:hilt-android:2.50")
     kapt("com.google.dagger:hilt-compiler:2.50")
 
-    // JWT 저장: EncryptedSharedPreferences
+    // Firebase Auth (Google 로그인)
+    implementation("com.google.firebase:firebase-auth-ktx:22.3.1")
+    implementation("com.google.android.gms:play-services-auth:21.2.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
+
+    // JWT 저장: EncryptedSharedPreferences (옵션: 토큰 캐시용)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }`,
       },
       {
+        title: "1.5단계: Firebase + Google 로그인 연결 (초보자용)",
+        desc: "콘솔 설정 → 앱 연결 → 로그인 코드 적용",
+        items: null,
+        code: `# 1) Firebase 콘솔 프로젝트 생성
+# - Authentication > Sign-in method > Google 활성화
+#
+# 2) Android 앱 등록
+# - 패키지명 입력
+# - SHA-1, SHA-256 등록 (Android Studio > Gradle > signingReport)
+#
+# 3) google-services.json 다운로드
+# - app/ 디렉토리에 넣기
+#
+# 4) Gradle 설정
+# - 프로젝트 build.gradle에 classpath 추가
+# - 앱 build.gradle에 plugins { id("com.google.gms.google-services") }
+#
+# 5) Google 로그인 버튼 연결 (Compose)
+// ui/auth/GoogleSignInButton.kt
+@Composable
+fun GoogleSignInButton(onResult: (String) -> Unit) {
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        val account = task.getResult(ApiException::class.java)
+        val credential = GoogleAuthProvider.getCredential(account.idToken, null)
+        FirebaseAuth.getInstance().signInWithCredential(credential)
+            .addOnSuccessListener { onResult(it.user?.uid ?: "") }
+    }
+
+    Button(onClick = {
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken(BuildConfig.FIREBASE_WEB_CLIENT_ID)
+            .requestEmail()
+            .build()
+        val signInClient = GoogleSignIn.getClient(context, gso)
+        launcher.launch(signInClient.signInIntent)
+    }) {
+        Text("Google로 시작하기")
+    }
+}`,
+      },
+      {
         title: "2단계: Retrofit API 인터페이스",
-        desc: "FastAPI 서버와 통신하는 Retrofit 설정",
+        desc: "Firebase ID 토큰을 자동으로 헤더에 주입",
         items: null,
         code: `// data/api/ApiService.kt
 interface ApiService {
@@ -480,6 +609,23 @@ object NetworkModule {
                 })
                 .build())
             .build()
+
+// data/api/AuthInterceptor.kt
+class AuthInterceptor @Inject constructor(): Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val user = FirebaseAuth.getInstance().currentUser
+        val token = runBlocking {
+            user?.getIdToken(false)?.await()?.token
+        }
+        val req = chain.request().newBuilder().apply {
+            // Phase 3에서 교체된 Firebase 토큰 검증과 연결
+            if (!token.isNullOrBlank()) {
+                addHeader("Authorization", "Bearer $token")
+            }
+        }.build()
+        return chain.proceed(req)
+    }
+}
 }`,
       },
       {
@@ -580,42 +726,32 @@ class RecordRepository @Inject constructor(
     id: 5,
     emoji: "🔐",
     title: "인증 & 보안",
-    subtitle: "JWT + 데이터 암호화",
+    subtitle: "Firebase Auth + 데이터 보호",
     color: COLORS.yellow,
     dim: COLORS.yellowDim,
     duration: "3~5일",
     steps: [
       {
-        title: "JWT 인증 (FastAPI)",
-        desc: "회원가입 / 로그인 / 토큰 갱신",
+        title: "왜 이 단계가 필요한가 (비즈니스 관점)",
+        desc: "보안 리스크와 법적 책임을 최소화",
+        items: [
+          { name: "비밀번호 보관 제거", note: "민감정보 저장을 피하고 리스크 절감" },
+          { name: "인증 신뢰 확보", note: "Google 보안 인프라 활용" },
+          { name: "운영 비용 절감", note: "자체 인증 시스템 유지비 제거" },
+        ],
+        code: null,
+      },
+      {
+        title: "Firebase Auth 흐름 (FastAPI)",
+        desc: "서버는 토큰 검증만 수행",
         items: null,
         code: `# app/core/security.py
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from datetime import datetime, timedelta
+# Phase 3에서 추가한 Firebase 토큰 검증을 그대로 사용
 
-SECRET_KEY = "your-secret-key"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE = 30   # 30분
-REFRESH_TOKEN_EXPIRE = 30  # 30일
-
-pwd_context = CryptContext(schemes=["bcrypt"])
-
-def create_access_token(user_id: int) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE)
-    return jwt.encode({"sub": str(user_id), "exp": expire}, SECRET_KEY, ALGORITHM)
-
-def verify_token(token: str) -> int:
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return int(payload["sub"])
-    except JWTError:
-        raise HTTPException(status_code=401, detail="인증 만료")
-
-# 안드로이드에서 토큰 저장 (암호화)
+# 안드로이드에서 토큰 저장 (옵션)
 # EncryptedSharedPreferences 사용
 # val sharedPrefs = EncryptedSharedPreferences.create(...)
-# sharedPrefs.edit().putString("access_token", token).apply()`,
+# sharedPrefs.edit().putString("firebase_id_token", token).apply()`,
       },
       {
         title: "이미지 보안 처리",
@@ -655,30 +791,33 @@ async def process_image(upload: UploadFile) -> dict:
     id: 6,
     emoji: "☁️",
     title: "서버 배포",
-    subtitle: "AWS / Railway / Render",
+    subtitle: "Railway + Supabase + Cloudflare R2",
     color: COLORS.accent,
     dim: COLORS.accentDim,
     duration: "2~3일",
     steps: [
       {
-        title: "배포 옵션 비교",
-        desc: "초기 스타트업 단계 추천 옵션",
+        title: "왜 이 단계가 필요한가 (비즈니스 관점)",
+        desc: "24시간 가용성과 비용 통제를 동시에 달성",
         items: [
-          { name: "Railway.app", note: "⭐ 추천 - FastAPI + PostgreSQL 원클릭 배포, 무료 티어 있음" },
-          { name: "Render.com", note: "무료 티어 넉넉, SSL 자동, DB 포함" },
-          { name: "AWS EC2 + RDS", note: "확장성 최고, 비용 발생, 설정 복잡" },
-          { name: "Google Cloud Run", note: "컨테이너 기반, 트래픽 기반 과금" },
+          { name: "운영 중단 방지", note: "로컬 PC 의존 탈피" },
+          { name: "전송료 0원", note: "이미지 Egress 비용 폭탄 차단" },
+          { name: "확장 준비", note: "트래픽 증가에도 비용 예측 가능" },
         ],
         code: null,
       },
       {
-        title: "Railway 배포 (가장 간단)",
-        desc: "GitHub 연결만으로 자동 배포",
+        title: "실전 배포: Railway + Supabase + Cloudflare R2",
+        desc: "백엔드/DB/스토리지 분리로 비용·보안 최적화",
         items: null,
-        code: `# 1. Procfile 생성
+        code: `# 1. Railway (FastAPI 배포)
+# - GitHub 연결 → Deploy
+# - Procfile / railway.toml 설정
+
+# Procfile
 web: uvicorn app.main:app --host 0.0.0.0 --port \${PORT}
 
-# 2. railway.toml
+# railway.toml
 [build]
 builder = "NIXPACKS"
 
@@ -687,10 +826,20 @@ startCommand = "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --po
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 
-# 3. 환경변수 설정 (Railway 대시보드에서)
+# 2. Supabase (Managed Postgres)
+# - 프로젝트 생성 → Database → Connection string 복사
+# - Railway 환경변수에 DATABASE_URL로 입력
 DATABASE_URL=postgresql://...
-SECRET_KEY=...
-ENVIRONMENT=production
+
+# 3. Cloudflare R2 (S3 호환 스토리지)
+# - R2 버킷 생성
+# - Access Key / Secret 생성
+# - Railway 환경변수에 입력
+R2_ACCESS_KEY=...
+R2_SECRET_KEY=...
+R2_BUCKET=babypoop-images
+R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+R2_PUBLIC_BASE=https://<public-domain>  # 공개 URL (커스텀 도메인)
 
 # 4. GitHub 연결 → 자동 배포
 # railway.app → New Project → Deploy from GitHub
@@ -736,55 +885,41 @@ android {
   {
     id: 7,
     emoji: "🧪",
-    title: "테스트 & 런칭",
-    subtitle: "품질 보증 및 출시 준비",
+    title: "미래 로드맵",
+    subtitle: "성장기 → 확장기 전략",
     color: COLORS.red,
     dim: COLORS.redDim,
     duration: "1주",
     steps: [
       {
-        title: "백엔드 테스트",
-        desc: "pytest로 API 엔드포인트 테스트",
-        items: null,
-        code: `# tests/test_analyze.py
-from fastapi.testclient import TestClient
-from app.main import app
-
-client = TestClient(app)
-
-def test_analyze_red_blood():
-    """혈변 입력 시 RED 반환 확인"""
-    res = client.post("/analyze/", data={
-        "bristol": 4, "frequency": 1, "color": "갈색",
-        "has_blood": True, "fever": False,
-        "vomiting": False, "dehydration": False,
-        "baby_months": 8,
-    }, headers={"Authorization": f"Bearer {get_test_token()}"})
-    assert res.status_code == 200
-    assert res.json()["risk"] == "RED"
-
-def test_analyze_newborn_black():
-    """신생아(0개월) 검은 변 → YELLOW (태변 예외)"""
-    res = client.post("/analyze/", data={
-        "bristol": 4, "frequency": 1, "color": "검은색",
-        "has_blood": False, "fever": False,
-        "vomiting": False, "dehydration": False,
-        "baby_months": 0,
-    }, headers={"Authorization": f"Bearer {get_test_token()}"})
-    assert res.json()["risk"] == "YELLOW"  # RED 아님!
-
-# 실행: pytest tests/ -v`,
+        title: "왜 이 단계가 필요한가 (비즈니스 관점)",
+        desc: "성장에 따라 비용과 성능을 동시에 관리",
+        items: [
+          { name: "성장기 대비", note: "이미지 비용/지연 최적화" },
+          { name: "확장기 대비", note: "GPU 분석 모듈 분리로 병목 해소" },
+          { name: "투자 설득력", note: "로드맵이 곧 실행력" },
+        ],
+        code: null,
       },
       {
-        title: "전체 개발 타임라인",
-        desc: "주차별 목표",
+        title: "성장기 (수천 명) 로드맵",
+        desc: "이미지 비용과 응답 속도 최적화",
         items: [
-          { name: "1주차", note: "환경 세팅 + 아키텍처 확정 + DB 스키마 설계" },
-          { name: "2주차", note: "FastAPI 핵심 API 완성 (분석, 기록 CRUD, 인증)" },
-          { name: "3주차", note: "Android 기본 화면 (입력폼, 결과화면)" },
-          { name: "4주차", note: "카메라 기능 + 오프라인 지원 + 연동 테스트" },
-          { name: "5주차", note: "디자인 다듬기 + 버그 수정 + 배포" },
-          { name: "6주차", note: "내부 테스터 피드백 → Google Play 심사 제출" },
+          { name: "이미지 리사이징", note: "업로드 전에 1024px 이하로 압축" },
+          { name: "썸네일 캐시", note: "Cloudflare 캐시로 조회 비용 절감" },
+          { name: "전송 최적화", note: "R2 + CDN 경로 표준화" },
+          { name: "백엔드 분리", note: "분석 API와 기록 API 분리 배포" },
+        ],
+        code: null,
+      },
+      {
+        title: "확장기 (AI 고도화) 로드맵",
+        desc: "GPU 분석 모듈 분리 + 비동기 처리",
+        items: [
+          { name: "GPU 워커 분리", note: "FastAPI ↔ GPU 분석 서버 큐 연동" },
+          { name: "비동기 파이프라인", note: "이미지 업로드 → 큐 → 결과 폴링" },
+          { name: "서버리스 기반", note: "Cloudflare Workers로 API 게이트웨이화" },
+          { name: "관측/모니터링", note: "알림·SLA 기준 수립" },
         ],
         code: null,
       },
@@ -795,23 +930,26 @@ def test_analyze_newborn_black():
 const stackTags = [
   "Python 3.11",
   "FastAPI",
-  "PostgreSQL",
+  "Supabase Postgres",
   "Kotlin",
   "Jetpack Compose",
   "Retrofit2",
   "Room DB",
   "Docker",
-  "JWT",
+  "Firebase Auth",
+  "Cloudflare R2",
   "CameraX",
+  "Cloudflare Workers",
 ];
 
 const checklist = [
-  { label: "회원가입 / 로그인 (JWT)", phase: "백엔드" },
+  { label: "Google 로그인 (Firebase Auth)", phase: "앱+백엔드" },
   { label: "Bristol + 색상 + 위험신호 입력폼", phase: "앱" },
   { label: "분석 결과 (GREEN/YELLOW/RED)", phase: "백엔드+앱" },
   { label: "기록 저장 + 타임라인", phase: "앱" },
   { label: "카메라/사진 업로드", phase: "앱" },
   { label: "EXIF 제거 (프라이버시)", phase: "백엔드" },
+  { label: "R2 저장소 연동", phase: "백엔드" },
   { label: "오프라인 로컬 저장", phase: "앱" },
   { label: "면책 조항 온보딩", phase: "앱" },
   { label: "RED 상태 응급 전화 연결", phase: "앱" },
